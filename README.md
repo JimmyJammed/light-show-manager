@@ -1,5 +1,10 @@
 # Light Show Manager
 
+[![Tests](https://github.com/JimmyJammed/light-show-manager/actions/workflows/test.yml/badge.svg)](https://github.com/JimmyJammed/light-show-manager/actions/workflows/test.yml)
+[![PyPI version](https://badge.fury.io/py/light-show-manager.svg)](https://badge.fury.io/py/light-show-manager)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A pure Python framework for orchestrating time-synchronized commands across any hardware or software system.
 
 ## Features
@@ -21,7 +26,7 @@ pip install light-show-manager
 Or for development:
 
 ```bash
-git clone https://github.com/yourusername/light-show-manager.git
+git clone https://github.com/JimmyJammed/light-show-manager.git
 cd light-show-manager
 pip install -e .
 ```
@@ -411,5 +416,6 @@ MIT License - see LICENSE file for details.
 
 ## Support
 
-- GitHub Issues: https://github.com/yourusername/light-show-manager/issues
-- Documentation: https://github.com/yourusername/light-show-manager#readme
+- GitHub Issues: https://github.com/JimmyJammed/light-show-manager/issues
+- GitHub Discussions: https://github.com/JimmyJammed/light-show-manager/discussions
+- Documentation: https://github.com/JimmyJammed/light-show-manager#readme

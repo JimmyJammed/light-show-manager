@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.8"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"}
+    {name = "Jimmy Hickman"}
 ]
 keywords = ["light-show", "timeline", "orchestration", "automation", "show-control"]
 classifiers = [
@@ -41,10 +41,10 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yourusername/light-show-manager"
-Documentation = "https://github.com/yourusername/light-show-manager#readme"
-Repository = "https://github.com/yourusername/light-show-manager"
-"Bug Tracker" = "https://github.com/yourusername/light-show-manager/issues"
+Homepage = "https://github.com/JimmyJammed/light-show-manager"
+Documentation = "https://github.com/JimmyJammed/light-show-manager#readme"
+Repository = "https://github.com/JimmyJammed/light-show-manager"
+"Bug Tracker" = "https://github.com/JimmyJammed/light-show-manager/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

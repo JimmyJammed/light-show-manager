@@ -1,0 +1,11 @@
+include README.md
+include LICENSE
+include CHANGELOG.md
+include pyproject.toml
+include setup.py
+recursive-include lightshow *.py
+recursive-include examples *.py
+recursive-exclude tests *
+recursive-exclude .github *
+global-exclude __pycache__
+global-exclude *.py[co]
