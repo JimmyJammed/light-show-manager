@@ -69,7 +69,8 @@ class LightShowManager:
         on_error: Optional[Callable] = None,
         max_workers: int = 20,
         time_precision: float = 0.05,
-        log_level: str = "INFO"
+        log_level: str = "INFO",
+        notifier: Optional[Any] = None
     ):
         """
         Initialize Light Show Manager.
@@ -86,6 +87,7 @@ class LightShowManager:
             max_workers: Max concurrent workers for sync operations
             time_precision: Scheduling precision in seconds (default: 50ms)
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
+            notifier: Optional NotificationManager for event notifications
         """
         self.shows: Dict[str, Show] = {}
         if shows:
@@ -102,6 +104,7 @@ class LightShowManager:
 
         self.executor = Executor(max_workers=max_workers)
         self.time_precision = time_precision
+        self.notifier = notifier
 
         # State management
         self._running = False
@@ -231,6 +234,11 @@ class LightShowManager:
         can_run, reason = await self._check_can_run(show, context)
         if not can_run:
             logger.warning(f"Show '{show.name}' cannot run: {reason}")
+
+            # Notify that show was blocked
+            if self.notifier:
+                self.notifier.notify_show_blocked(show.name, reason)
+
             return
 
         logger.info(f"Show '{show.name}' approved to run: {reason}")
@@ -240,6 +248,10 @@ class LightShowManager:
         self._interrupted = False
 
         logger.info(f"Starting show: {show.name}")
+
+        # Notify that show is starting
+        if self.notifier:
+            self.notifier.notify_show_start(show.name, context)
 
         try:
             # PRE-SHOW HOOK
@@ -252,6 +264,10 @@ class LightShowManager:
 
             logger.info(f"Show completed: {show.name}")
 
+            # Notify that show completed successfully
+            if self.notifier:
+                self.notifier.notify_show_end(show.name, context)
+
         except KeyboardInterrupt:
             logger.warning(f"Show interrupted by user: {show.name}")
             self._interrupted = True
@@ -259,6 +275,10 @@ class LightShowManager:
 
         except Exception as e:
             logger.error(f"Show error: {show.name} - {e}", exc_info=True)
+
+            # Notify that show failed
+            if self.notifier:
+                self.notifier.notify_show_failed(show.name, str(e))
 
             # ERROR HOOK
             if self.hooks.on_error:

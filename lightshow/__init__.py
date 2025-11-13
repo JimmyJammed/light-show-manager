@@ -44,6 +44,15 @@ from lightshow.exceptions import (
     ShowInterruptedError,
 )
 
+# Optional notification system (requires requests library for Pushover)
+from lightshow.notifications import (
+    NotificationManager,
+    NotificationBackend,
+    NotificationEvent,
+    PushoverBackend,
+    LoggingBackend,
+)
+
 # Audio module is available but not imported by default
 # Users can import with: from lightshow.audio import AudioPlayer
 
@@ -67,6 +76,13 @@ __all__ = [
     # Show management
     "ShowRotation",
     "VolumeScheduler",
+
+    # Notifications
+    "NotificationManager",
+    "NotificationBackend",
+    "NotificationEvent",
+    "PushoverBackend",
+    "LoggingBackend",
 
     # Utilities
     "normalize_show_name",
