@@ -1,0 +1,2 @@
+# No dependencies! Pure Python with asyncio (stdlib)
+# This file is intentionally empty.
