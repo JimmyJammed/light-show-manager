@@ -149,12 +149,53 @@ class LightShowManager:
         """Get list of all show names."""
         return list(self.shows.keys())
 
+    @property
+    def is_running(self) -> bool:
+        """Check if a show is currently running."""
+        return self._running
+
+    @property
+    def current_show_name(self) -> Optional[str]:
+        """Get name of currently running show, or None if no show is running."""
+        return self._current_show.name if self._current_show else None
+
+    async def stop_current_show(self) -> None:
+        """
+        Stop the currently running show.
+
+        Triggers post_show hook for cleanup before stopping.
+        This is called automatically when interrupt=True is used.
+        Can also be called manually to stop a show.
+        """
+        if not self._running or not self._current_show:
+            logger.debug("No show is currently running")
+            return
+
+        show_name = self._current_show.name
+        logger.info(f"Stopping show: {show_name}")
+        self._interrupted = True
+
+        # Wait for the show to finish cleanup
+        # The timeline will break on next iteration when it sees _interrupted
+        # The finally block in run_show will run post_show hook
+        max_wait = 2.0  # Wait up to 2 seconds for cleanup
+        waited = 0.0
+        while self._running and waited < max_wait:
+            await asyncio.sleep(0.05)
+            waited += 0.05
+
+        if self._running:
+            logger.warning(f"Show '{show_name}' did not stop cleanly within {max_wait}s")
+        else:
+            logger.debug(f"Show '{show_name}' stopped successfully")
+
     # ========== SHOW EXECUTION ==========
 
     async def run_show(
         self,
         name: str,
-        context: Optional[dict] = None
+        context: Optional[dict] = None,
+        interrupt: bool = False
     ) -> None:
         """
         Run a specific show.
@@ -162,6 +203,8 @@ class LightShowManager:
         Args:
             name: Show name
             context: Optional context dict passed to all hooks
+            interrupt: If True, stop currently running show before starting new one.
+                      If False (default), block new show if one is already running.
 
         Raises:
             ShowNotFoundError: If show not found
@@ -169,6 +212,20 @@ class LightShowManager:
         """
         show = self.get_show(name)
         context = context or {}
+
+        # CHECK IF ANOTHER SHOW IS ALREADY RUNNING
+        if self._running and self._current_show:
+            if interrupt:
+                logger.info(f"Interrupting current show '{self._current_show.name}' to start '{show.name}'")
+                await self.stop_current_show()
+                # Give a brief moment for cleanup to complete
+                await asyncio.sleep(0.1)
+            else:
+                logger.warning(
+                    f"Cannot start show '{show.name}': show '{self._current_show.name}' is already running. "
+                    f"Use interrupt=True to stop the current show first."
+                )
+                return
 
         # CHECK IF SHOW CAN RUN
         can_run, reason = await self._check_can_run(show, context)
@@ -301,8 +358,19 @@ class LightShowManager:
             current_time = time.time() - start_time
             wait_time = event.timestamp - current_time
 
+            # Sleep in small intervals to check for interrupts frequently
             if wait_time > 0:
-                await asyncio.sleep(wait_time)
+                check_interval = 0.1  # Check for interrupts every 100ms
+                while wait_time > 0 and not self._interrupted:
+                    sleep_time = min(wait_time, check_interval)
+                    await asyncio.sleep(sleep_time)
+                    current_time = time.time() - start_time
+                    wait_time = event.timestamp - current_time
+
+            # Check if interrupted during wait
+            if self._interrupted:
+                logger.info("Timeline execution stopped")
+                break
 
             # Execute event
             try:

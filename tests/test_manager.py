@@ -438,3 +438,189 @@ class TestLightShowManager:
 
         # Show should have run despite invalid return
         assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_blocks_concurrent_shows_by_default(self):
+        """Test that starting a new show while one is running is blocked by default."""
+        reset_tracking()
+
+        show1 = Show("show1", duration=1.0)
+        show1.add_sync_event(0.0, sync_cmd("show1_start"))
+        show1.add_sync_event(0.5, sync_cmd("show1_mid"))
+
+        show2 = Show("show2", duration=0.5)
+        show2.add_sync_event(0.0, sync_cmd("show2_start"))
+
+        manager = LightShowManager(shows=[show1, show2])
+
+        # Start show1 in background
+        show1_task = asyncio.create_task(manager.run_show("show1"))
+
+        # Wait a bit for show1 to start
+        await asyncio.sleep(0.1)
+
+        # Try to start show2 - should be blocked
+        await manager.run_show("show2")
+
+        # Show2 should NOT have run
+        assert "show2_start" not in executed_commands
+
+        # Show1 should still be running
+        assert manager.is_running
+        assert manager.current_show_name == "show1"
+
+        # Wait for show1 to finish
+        await show1_task
+
+        # Now show1 should be done
+        assert not manager.is_running
+        assert "show1_start" in executed_commands
+        assert "show1_mid" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_interrupt_stops_current_show(self):
+        """Test that interrupt=True stops the current show and starts new one."""
+        reset_tracking()
+
+        show1 = Show("show1", duration=5.0)
+        show1.add_sync_event(0.0, sync_cmd("show1_start"))
+        show1.add_sync_event(3.0, sync_cmd("show1_mid"))
+        show1.add_sync_event(4.9, sync_cmd("show1_end"))
+
+        show2 = Show("show2", duration=0.5)
+        show2.add_sync_event(0.0, sync_cmd("show2_start"))
+        show2.add_sync_event(0.4, sync_cmd("show2_end"))
+
+        post_show_calls = []
+        def post_hook(show, context):
+            post_show_calls.append(show.name)
+
+        manager = LightShowManager(shows=[show1, show2], post_show=post_hook)
+
+        # Start show1 in background
+        show1_task = asyncio.create_task(manager.run_show("show1"))
+
+        # Wait for show1 to start but not reach mid event (mid is at 3.0s)
+        await asyncio.sleep(0.3)
+
+        # Verify show1 is running
+        assert manager.is_running
+        assert manager.current_show_name == "show1"
+        assert "show1_start" in executed_commands
+
+        # Interrupt show1 and start show2
+        await manager.run_show("show2", interrupt=True)
+
+        # Show1 should have been interrupted (mid and end events should NOT have run)
+        # Mid is at 3.0s, we stopped at 0.3s, so mid should NOT have fired
+        assert "show1_mid" not in executed_commands
+        assert "show1_end" not in executed_commands
+
+        # Show2 should have run completely
+        assert "show2_start" in executed_commands
+        assert "show2_end" in executed_commands
+
+        # Post-show should have been called for show1 (cleanup)
+        assert "show1" in post_show_calls
+
+        # Clean up show1 task
+        try:
+            await show1_task
+        except:
+            pass  # Expected to be interrupted
+
+    @pytest.mark.asyncio
+    async def test_stop_current_show(self):
+        """Test manually stopping a running show."""
+        reset_tracking()
+
+        show = Show("test", duration=5.0)
+        show.add_sync_event(0.0, sync_cmd("start"))
+        show.add_sync_event(3.0, sync_cmd("mid"))
+        show.add_sync_event(4.9, sync_cmd("end"))
+
+        post_show_called = []
+        def post_hook(s, c):
+            post_show_called.append(True)
+
+        manager = LightShowManager(shows=[show], post_show=post_hook)
+
+        # Start show in background
+        show_task = asyncio.create_task(manager.run_show("test"))
+
+        # Wait for show to start but not reach mid event (mid is at 3.0s)
+        await asyncio.sleep(0.3)
+
+        # Verify show is running
+        assert manager.is_running
+        assert manager.current_show_name == "test"
+        assert "start" in executed_commands
+
+        # Stop the show
+        await manager.stop_current_show()
+
+        # Show should have stopped
+        assert not manager.is_running
+        assert manager.current_show_name is None
+
+        # Mid and end events should NOT have run (mid is at 3.0s, we stopped at 0.3s)
+        assert "mid" not in executed_commands
+        assert "end" not in executed_commands
+
+        # Post-show should have been called
+        assert len(post_show_called) == 1
+
+        # Clean up task
+        try:
+            await show_task
+        except:
+            pass
+
+    @pytest.mark.asyncio
+    async def test_is_running_property(self):
+        """Test is_running property."""
+        reset_tracking()
+
+        show = Show("test", duration=1.0)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+        show.add_sync_event(0.5, sync_cmd("cmd2"))
+
+        manager = LightShowManager(shows=[show])
+
+        # Initially not running
+        assert not manager.is_running
+        assert manager.current_show_name is None
+
+        # Start show in background
+        show_task = asyncio.create_task(manager.run_show("test"))
+
+        # Wait a bit for show to start
+        await asyncio.sleep(0.2)
+
+        # Should be running
+        assert manager.is_running
+        assert manager.current_show_name == "test"
+
+        # Wait for show to complete
+        await show_task
+
+        # Should be done
+        assert not manager.is_running
+        assert manager.current_show_name is None
+
+    @pytest.mark.asyncio
+    async def test_stop_when_not_running(self):
+        """Test that stopping when no show is running doesn't crash."""
+        reset_tracking()
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show])
+
+        # Try to stop when nothing is running
+        await manager.stop_current_show()  # Should not crash
+
+        # Should still work normally
+        await manager.run_show("test")
+        assert "cmd1" in executed_commands
