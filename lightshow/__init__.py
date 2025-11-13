@@ -32,6 +32,7 @@ from lightshow.show import Show
 from lightshow.manager import LightShowManager, LifecycleHooks
 from lightshow.timeline import Timeline, TimelineEvent
 from lightshow.executor import Executor
+from lightshow.process_lock import ProcessLock, ProcessLockError
 from lightshow.exceptions import (
     LightShowError,
     ShowNotFoundError,
@@ -55,6 +56,10 @@ __all__ = [
 
     # Executor
     "Executor",
+
+    # Process locking
+    "ProcessLock",
+    "ProcessLockError",
 
     # Exceptions
     "LightShowError",
