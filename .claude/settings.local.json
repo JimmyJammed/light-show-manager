@@ -6,7 +6,8 @@
       "Bash(python3:*)",
       "Bash(pytest:*)",
       "Bash(twine check:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ],
     "deny": [],
     "ask": []

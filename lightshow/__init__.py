@@ -40,6 +40,9 @@ from lightshow.exceptions import (
     ShowInterruptedError,
 )
 
+# Audio module is available but not imported by default
+# Users can import with: from lightshow.audio import AudioPlayer
+
 __all__ = [
     # Main classes
     "Show",
