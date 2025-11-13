@@ -260,13 +260,29 @@ class AudioPlayer:
 
         # Initialize backend
         if backend is None:
-            # Auto-detect: try pygame
-            try:
-                self.backend = PygameBackend(output_device=output_device)
-                logger.info(f"Audio player initialized with pygame backend")
-            except AudioNotAvailableError as e:
-                logger.warning(f"Pygame not available, using dummy backend: {e}")
-                self.backend = DummyBackend()
+            # Auto-detect platform and use best backend
+            if platform.system() == "Darwin":
+                # Try afplay first on macOS (better M4A/AAC support)
+                try:
+                    from lightshow.audio.afplay_backend import AfplayBackend
+                    self.backend = AfplayBackend(output_device=output_device)
+                    logger.info("Audio player initialized with afplay backend (macOS)")
+                except Exception as e:
+                    logger.warning(f"Afplay not available, trying pygame: {e}")
+                    try:
+                        self.backend = PygameBackend(output_device=output_device)
+                        logger.info("Audio player initialized with pygame backend")
+                    except AudioNotAvailableError as e2:
+                        logger.warning(f"Pygame not available, using dummy backend: {e2}")
+                        self.backend = DummyBackend()
+            else:
+                # Try pygame on other platforms
+                try:
+                    self.backend = PygameBackend(output_device=output_device)
+                    logger.info("Audio player initialized with pygame backend")
+                except AudioNotAvailableError as e:
+                    logger.warning(f"Pygame not available, using dummy backend: {e}")
+                    self.backend = DummyBackend()
         elif backend == "dummy":
             self.backend = DummyBackend()
         elif isinstance(backend, AudioBackend):

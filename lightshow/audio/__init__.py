@@ -20,6 +20,7 @@ Example:
 """
 
 from lightshow.audio.audio_player import AudioPlayer, AudioBackend
+from lightshow.audio.afplay_backend import AfplayBackend
 from lightshow.audio.exceptions import (
     AudioError,
     AudioNotAvailableError,
@@ -30,6 +31,7 @@ from lightshow.audio.exceptions import (
 __all__ = [
     "AudioPlayer",
     "AudioBackend",
+    "AfplayBackend",
     "AudioError",
     "AudioNotAvailableError",
     "AudioFileNotFoundError",
