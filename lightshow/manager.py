@@ -30,6 +30,7 @@ class LifecycleHooks:
     All hooks receive the show object and optional context dict.
     Hooks can be sync or async functions.
     """
+    can_run: Optional[Callable] = None
     pre_show: Optional[Callable] = None
     post_show: Optional[Callable] = None
     on_event: Optional[Callable] = None
@@ -61,6 +62,7 @@ class LightShowManager:
     def __init__(
         self,
         shows: Optional[List[Show]] = None,
+        can_run: Optional[Callable] = None,
         pre_show: Optional[Callable] = None,
         post_show: Optional[Callable] = None,
         on_event: Optional[Callable] = None,
@@ -74,6 +76,9 @@ class LightShowManager:
 
         Args:
             shows: List of Show objects to manage
+            can_run: Check if show can run (receives: show, context; returns: bool, str)
+                     Return (True, "reason") to allow, (False, "reason") to block
+                     Default: always returns (True, "No restrictions")
             pre_show: Callback before each show (receives: show, context)
             post_show: Callback after each show (ALWAYS runs, receives: show, context)
             on_event: Callback when each event fires (receives: event, show, context)
@@ -88,6 +93,7 @@ class LightShowManager:
                 self.shows[show.name] = show
 
         self.hooks = LifecycleHooks(
+            can_run=can_run,
             pre_show=pre_show,
             post_show=post_show,
             on_event=on_event,
@@ -163,6 +169,14 @@ class LightShowManager:
         """
         show = self.get_show(name)
         context = context or {}
+
+        # CHECK IF SHOW CAN RUN
+        can_run, reason = await self._check_can_run(show, context)
+        if not can_run:
+            logger.warning(f"Show '{show.name}' cannot run: {reason}")
+            return
+
+        logger.info(f"Show '{show.name}' approved to run: {reason}")
 
         self._running = True
         self._current_show = show
@@ -347,6 +361,57 @@ class LightShowManager:
                 await self.executor.execute_async(event.command)
             else:
                 await self.executor.execute_sync(event.command)
+
+    async def _check_can_run(self, show: Show, context: dict) -> tuple[bool, str]:
+        """
+        Check if show can run using the can_run hook.
+
+        Args:
+            show: The show to check
+            context: Context dict
+
+        Returns:
+            Tuple of (can_run: bool, reason: str)
+            - If no hook: (True, "No restrictions")
+            - If hook returns bool: (result, "Check passed/failed")
+            - If hook returns (bool, str): Use that tuple
+        """
+        if not self.hooks.can_run:
+            return (True, "No restrictions")
+
+        try:
+            # Run the hook
+            if asyncio.iscoroutinefunction(self.hooks.can_run):
+                result = await self.hooks.can_run(show, context)
+            else:
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, lambda: self.hooks.can_run(show, context)
+                )
+
+            # Handle different return types
+            if isinstance(result, tuple) and len(result) == 2:
+                # Hook returned (bool, str)
+                can_run, reason = result
+                return (bool(can_run), str(reason))
+            elif isinstance(result, bool):
+                # Hook returned just bool
+                if result:
+                    return (True, "Check passed")
+                else:
+                    return (False, "Check failed")
+            else:
+                # Invalid return type - treat as True
+                logger.warning(
+                    f"can_run hook returned invalid type {type(result)}, "
+                    "expected (bool, str) or bool. Allowing show to run."
+                )
+                return (True, "Invalid check result, defaulting to allow")
+
+        except Exception as e:
+            logger.error(f"can_run hook failed: {e}", exc_info=True)
+            # On error, allow show to run (fail-open)
+            return (True, f"Check error (allowing): {e}")
 
     async def _run_hook(self, hook: Callable, *args, **kwargs) -> None:
         """

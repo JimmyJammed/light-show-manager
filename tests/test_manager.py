@@ -261,3 +261,180 @@ class TestLightShowManager:
 
         # Post-show should still be called
         assert ("post_show", "test") in hook_calls
+
+    @pytest.mark.asyncio
+    async def test_can_run_default_allows(self):
+        """Test default can_run behavior allows shows to run."""
+        reset_tracking()
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        # No can_run hook - should allow by default
+        manager = LightShowManager(shows=[show])
+        await manager.run_show("test")
+
+        assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_sync_allows(self):
+        """Test can_run hook that allows execution (sync)."""
+        reset_tracking()
+
+        def allow_check(show, context):
+            return (True, "Test passed")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=allow_check)
+        await manager.run_show("test")
+
+        assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_sync_blocks(self):
+        """Test can_run hook that blocks execution (sync)."""
+        reset_tracking()
+
+        def block_check(show, context):
+            return (False, "Not allowed")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=block_check)
+        await manager.run_show("test")
+
+        # Command should not have executed
+        assert "cmd1" not in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_async_allows(self):
+        """Test can_run hook that allows execution (async)."""
+        reset_tracking()
+
+        async def allow_check(show, context):
+            await asyncio.sleep(0.01)
+            return (True, "Async check passed")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=allow_check)
+        await manager.run_show("test")
+
+        assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_async_blocks(self):
+        """Test can_run hook that blocks execution (async)."""
+        reset_tracking()
+
+        async def block_check(show, context):
+            await asyncio.sleep(0.01)
+            return (False, "Async check failed")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=block_check)
+        await manager.run_show("test")
+
+        # Command should not have executed
+        assert "cmd1" not in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_bool_only_return(self):
+        """Test can_run hook with bool-only return (no reason string)."""
+        reset_tracking()
+
+        def bool_check(show, context):
+            return True
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=bool_check)
+        await manager.run_show("test")
+
+        assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_bool_false_only(self):
+        """Test can_run hook with False return (no reason string)."""
+        reset_tracking()
+
+        def bool_check(show, context):
+            return False
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        manager = LightShowManager(shows=[show], can_run=bool_check)
+        await manager.run_show("test")
+
+        # Command should not have executed
+        assert "cmd1" not in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_with_context(self):
+        """Test can_run hook receives context."""
+        reset_tracking()
+        context_received = {}
+
+        def check_with_context(show, context):
+            context_received.update(context)
+            return (context.get("allowed", False), "Context checked")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        # First try: blocked
+        manager = LightShowManager(shows=[show], can_run=check_with_context)
+        await manager.run_show("test", context={"allowed": False})
+        assert "cmd1" not in executed_commands
+        assert context_received["allowed"] == False
+
+        # Second try: allowed
+        reset_tracking()
+        context_received.clear()
+        await manager.run_show("test", context={"allowed": True})
+        assert "cmd1" in executed_commands
+        assert context_received["allowed"] == True
+
+    @pytest.mark.asyncio
+    async def test_can_run_error_fails_open(self):
+        """Test can_run hook errors fail open (allow show to run)."""
+        reset_tracking()
+
+        def error_check(show, context):
+            raise ValueError("Check error")
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        # Error in can_run should allow show to run (fail-open)
+        manager = LightShowManager(shows=[show], can_run=error_check)
+        await manager.run_show("test")
+
+        # Show should have run despite error
+        assert "cmd1" in executed_commands
+
+    @pytest.mark.asyncio
+    async def test_can_run_invalid_return_fails_open(self):
+        """Test can_run hook with invalid return fails open."""
+        reset_tracking()
+
+        def invalid_check(show, context):
+            return "invalid"
+
+        show = Show("test", duration=0.5)
+        show.add_sync_event(0.0, sync_cmd("cmd1"))
+
+        # Invalid return should allow show to run (fail-open)
+        manager = LightShowManager(shows=[show], can_run=invalid_check)
+        await manager.run_show("test")
+
+        # Show should have run despite invalid return
+        assert "cmd1" in executed_commands
