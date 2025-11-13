@@ -33,6 +33,9 @@ from lightshow.manager import LightShowManager, LifecycleHooks
 from lightshow.timeline import Timeline, TimelineEvent
 from lightshow.executor import Executor
 from lightshow.process_lock import ProcessLock, ProcessLockError
+from lightshow.rotation import ShowRotation
+from lightshow.volume_scheduler import VolumeScheduler
+from lightshow.utils import normalize_show_name
 from lightshow.exceptions import (
     LightShowError,
     ShowNotFoundError,
@@ -60,6 +63,13 @@ __all__ = [
     # Process locking
     "ProcessLock",
     "ProcessLockError",
+
+    # Show management
+    "ShowRotation",
+    "VolumeScheduler",
+
+    # Utilities
+    "normalize_show_name",
 
     # Exceptions
     "LightShowError",

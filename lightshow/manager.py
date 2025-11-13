@@ -317,6 +317,63 @@ class LightShowManager:
 
             logger.info(f"Rotation iteration {iteration} complete")
 
+    async def run_all_shows(
+        self,
+        delay_between: float = 5.0,
+        context: Optional[dict] = None,
+        repeat: bool = False
+    ) -> None:
+        """
+        Run all registered shows sequentially.
+
+        Useful for testing/demo purposes to showcase all shows.
+
+        Args:
+            delay_between: Seconds to wait between shows (default: 5.0)
+            context: Optional context dict passed to all shows
+            repeat: If True, loop through all shows repeatedly
+
+        Example:
+            # Run all shows once with 5 second delays
+            await manager.run_all_shows()
+
+            # Run all shows repeatedly with 10 second delays
+            await manager.run_all_shows(delay_between=10.0, repeat=True)
+        """
+        if not self.shows:
+            logger.warning("No shows registered, cannot run all shows")
+            return
+
+        show_names = list(self.shows.keys())
+        logger.info(f"Running all {len(show_names)} shows with {delay_between}s delay between")
+
+        context = context or {}
+        iteration = 0
+
+        while True:
+            iteration += 1
+            if repeat:
+                logger.info(f"Starting all-shows iteration {iteration}")
+
+            for i, name in enumerate(show_names, 1):
+                if self._interrupted:
+                    logger.info("All-shows loop interrupted")
+                    return
+
+                logger.info(f"[{i}/{len(show_names)}] Running show: {name}")
+                await self.run_show(name, context)
+
+                # Add delay between shows (but not after the last show)
+                if i < len(show_names) and delay_between > 0:
+                    logger.debug(f"Waiting {delay_between}s before next show...")
+                    await asyncio.sleep(delay_between)
+
+            if not repeat:
+                logger.info(f"Completed all {len(show_names)} shows")
+                break
+
+            logger.info(f"All-shows iteration {iteration} complete, repeating...")
+
     # ========== CONTROL METHODS ==========
 
     def stop(self) -> None:
