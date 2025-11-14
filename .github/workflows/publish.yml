@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish to PyPI and GitHub Packages
 
 on:
   release:
@@ -7,6 +7,9 @@ on:
 jobs:
   build-and-publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
     - uses: actions/checkout@v4
@@ -32,3 +35,14 @@ jobs:
         TWINE_USERNAME: __token__
         TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
       run: twine upload dist/*
+
+    - name: Publish to GitHub Packages
+      env:
+        TWINE_USERNAME: __token__
+        TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        twine upload \
+          --repository-url https://upload.pkg.github.com/JimmyJammed/light-show-manager \
+          --username __token__ \
+          --password ${{ secrets.GITHUB_TOKEN }} \
+          dist/*
