@@ -24,7 +24,7 @@ Example:
     asyncio.run(manager.run_show("demo"))
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Jimmy Hickman"
 __license__ = "MIT"
 
@@ -35,6 +35,7 @@ from lightshow.executor import Executor
 from lightshow.process_lock import ProcessLock, ProcessLockError
 from lightshow.rotation import ShowRotation
 from lightshow.volume_scheduler import VolumeScheduler
+from lightshow.device_state import with_device_state_management
 from lightshow.utils import normalize_show_name
 from lightshow.exceptions import (
     LightShowError,
@@ -76,6 +77,9 @@ __all__ = [
     # Show management
     "ShowRotation",
     "VolumeScheduler",
+
+    # Device state management
+    "with_device_state_management",
 
     # Notifications
     "NotificationManager",
