@@ -5,7 +5,7 @@ A pure Python framework for coordinating time-synchronized commands
 across any hardware or software system.
 
 Example:
-    from lightshow import LightShowManager, Show
+    from lightshow import LightShowManager, RunResult, Show
 
     # Create show
     show = Show("demo", duration=60.0)
@@ -24,12 +24,12 @@ Example:
     asyncio.run(manager.run_show("demo"))
 """
 
-__version__ = "0.2.0"
+__version__ = "2.0.0"
 __author__ = "Jimmy Hickman"
 __license__ = "MIT"
 
 from lightshow.show import Show
-from lightshow.manager import LightShowManager, LifecycleHooks
+from lightshow.manager import LightShowManager, RunResult, LifecycleHooks
 from lightshow.timeline import Timeline, TimelineEvent
 from lightshow.executor import Executor
 from lightshow.process_lock import ProcessLock, ProcessLockError
@@ -63,6 +63,7 @@ __all__ = [
     # Main classes
     "Show",
     "LightShowManager",
+    "RunResult",
     "LifecycleHooks",
     # Timeline classes
     "Timeline",

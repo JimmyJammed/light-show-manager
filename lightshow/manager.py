@@ -5,16 +5,19 @@ Manages show execution with lifecycle hooks and graceful shutdown.
 """
 
 import asyncio
-import signal
+import inspect
 import logging
+import signal
 import time
-from typing import Dict, Optional, Callable, List, Any, Tuple
-from dataclasses import dataclass
+from collections.abc import Callable
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Any
 
-from lightshow.show import Show
+from lightshow.exceptions import EventExecutionError, ShowNotFoundError
 from lightshow.executor import Executor
+from lightshow.show import Show
 from lightshow.timeline import TimelineEvent
-from lightshow.exceptions import ShowNotFoundError, EventExecutionError, ShowInterruptedError
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +31,21 @@ class LifecycleHooks:
     Hooks can be sync or async functions.
     """
 
-    can_run: Optional[Callable] = None
-    pre_show: Optional[Callable] = None
-    post_show: Optional[Callable] = None
-    on_event: Optional[Callable] = None
-    on_error: Optional[Callable] = None
+    can_run: Callable | None = None
+    pre_show: Callable | None = None
+    post_show: Callable | None = None
+    on_event: Callable | None = None
+    on_error: Callable | None = None
+
+
+@dataclass
+class RunResult:
+    """Outcome; failures are also raised and available through last_result."""
+
+    name: str
+    status: str = "completed"
+    errors: list[Exception] = field(default_factory=list)
+    reason: str = ""
 
 
 class LightShowManager:
@@ -59,16 +72,18 @@ class LightShowManager:
 
     def __init__(
         self,
-        shows: Optional[List[Show]] = None,
-        can_run: Optional[Callable] = None,
-        pre_show: Optional[Callable] = None,
-        post_show: Optional[Callable] = None,
-        on_event: Optional[Callable] = None,
-        on_error: Optional[Callable] = None,
+        shows: list[Show] | None = None,
+        can_run: Callable | None = None,
+        pre_show: Callable | None = None,
+        post_show: Callable | None = None,
+        on_event: Callable | None = None,
+        on_error: Callable | None = None,
         max_workers: int = 20,
         time_precision: float = 0.05,
         log_level: str = "INFO",
-        notifier: Optional[Any] = None,
+        notifier: Any | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable = asyncio.sleep,
     ):
         """
         Initialize Light Show Manager.
@@ -87,7 +102,7 @@ class LightShowManager:
             log_level: Logging level (DEBUG, INFO, WARNING, ERROR)
             notifier: Optional NotificationManager for event notifications
         """
-        self.shows: Dict[str, Show] = {}
+        self.shows: dict[str, Show] = {}
         if shows:
             for show in shows:
                 self.shows[show.name] = show
@@ -106,19 +121,30 @@ class LightShowManager:
 
         # State management
         self._running = False
-        self._current_show: Optional[Show] = None
+        self._current_show: Show | None = None
         self._interrupted = False
 
-        # Configure logging
-        log_level_num = getattr(logging, log_level.upper(), logging.INFO)
-        logging.basicConfig(
-            level=log_level_num, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        logger.setLevel(log_level_num)
+        self._clock = clock
+        self._sleep = sleep
+        self._start_lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
+        self._closed = False
+        self._started = False
+        self.last_result: RunResult | None = None
+        if time_precision <= 0:
+            raise ValueError("time_precision must be positive")
 
-        # Register signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self._handle_interrupt)
-        signal.signal(signal.SIGTERM, self._handle_interrupt)
+    @contextmanager
+    def signal_handlers(self):
+        """Opt in from the main thread; restore host signal handlers on exit."""
+        previous = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM)}
+        try:
+            for signum in previous:
+                signal.signal(signum, self._handle_interrupt)
+            yield self
+        finally:
+            for signum, handler in previous.items():
+                signal.signal(signum, handler)
 
     # ========== SHOW MANAGEMENT ==========
 
@@ -145,7 +171,7 @@ class LightShowManager:
             logger.info(f"Removed show: {name}")
 
     @property
-    def show_names(self) -> List[str]:
+    def show_names(self) -> list[str]:
         """Get list of all show names."""
         return list(self.shows.keys())
 
@@ -155,150 +181,115 @@ class LightShowManager:
         return self._running
 
     @property
-    def current_show_name(self) -> Optional[str]:
+    def current_show_name(self) -> str | None:
         """Get name of currently running show, or None if no show is running."""
         return self._current_show.name if self._current_show else None
 
     async def stop_current_show(self) -> None:
-        """
-        Stop the currently running show.
-
-        Triggers post_show hook for cleanup before stopping.
-        This is called automatically when interrupt=True is used.
-        Can also be called manually to stop a show.
-        """
-        if not self._running or not self._current_show:
-            logger.debug("No show is currently running")
+        """Cancel the active timeline and await its cleanup without a timeout."""
+        task = self._task
+        if task is None or task.done():
             return
-
-        show_name = self._current_show.name
-        logger.info(f"Stopping show: {show_name}")
-        self._interrupted = True
-
-        # Wait for the show to finish cleanup
-        # The timeline will break on next iteration when it sees _interrupted
-        # The finally block in run_show will run post_show hook
-        max_wait = 2.0  # Wait up to 2 seconds for cleanup
-        waited = 0.0
-        while self._running and waited < max_wait:
-            await asyncio.sleep(0.05)
-            waited += 0.05
-
-        if self._running:
-            logger.warning(f"Show '{show_name}' did not stop cleanly within {max_wait}s")
-        else:
-            logger.debug(f"Show '{show_name}' stopped successfully")
-
-    # ========== SHOW EXECUTION ==========
+        if task is asyncio.current_task():
+            self._interrupted = True
+            return
+        self.stop()
+        await asyncio.shield(task)
 
     async def run_show(
-        self, name: str, context: Optional[dict] = None, interrupt: bool = False
-    ) -> None:
-        """
-        Run a specific show.
-
-        Args:
-            name: Show name
-            context: Optional context dict passed to all hooks
-            interrupt: If True, stop currently running show before starting new one.
-                      If False (default), block new show if one is already running.
-
-        Raises:
-            ShowNotFoundError: If show not found
-            ShowInterruptedError: If show interrupted
-        """
+        self, name: str, context: dict | None = None, interrupt: bool = False
+    ) -> RunResult:
+        if self._closed:
+            raise RuntimeError("Manager is closed")
         show = self.get_show(name)
-        context = context or {}
-
-        # CHECK IF ANOTHER SHOW IS ALREADY RUNNING
-        if self._running and self._current_show:
-            if interrupt:
-                logger.info(
-                    f"Interrupting current show '{self._current_show.name}' to start '{show.name}'"
-                )
+        context = context if context is not None else {}
+        async with self._start_lock:
+            if self._task is not None and not self._task.done():
+                if not interrupt:
+                    return RunResult(name, "blocked", reason="Another show is running")
                 await self.stop_current_show()
-                # Give a brief moment for cleanup to complete
-                await asyncio.sleep(0.1)
-            else:
-                logger.warning(
-                    f"Cannot start show '{show.name}': show '{self._current_show.name}' is already running. "
-                    f"Use interrupt=True to stop the current show first."
-                )
-                return
-
-        # CHECK IF SHOW CAN RUN
-        can_run, reason = await self._check_can_run(show, context)
-        if not can_run:
-            logger.warning(f"Show '{show.name}' cannot run: {reason}")
-
-            # Notify that show was blocked
-            if self.notifier:
-                self.notifier.notify_show_blocked(show.name, reason)
-
-            return
-
-        logger.info(f"Show '{show.name}' approved to run: {reason}")
-
-        self._running = True
-        self._current_show = show
-        self._interrupted = False
-
-        logger.info(f"Starting show: {show.name}")
-
-        # Notify that show is starting
-        if self.notifier:
-            self.notifier.notify_show_start(show.name, context)
-
+            self._interrupted = False
+            self._running = True
+            self._current_show = show
+            self._started = False
+            task = asyncio.create_task(self._run_owned(show, context))
+            self._task = task
         try:
-            # PRE-SHOW HOOK
-            if self.hooks.pre_show:
-                logger.debug("Running pre-show hook")
-                await self._run_hook(self.hooks.pre_show, show, context)
-
-            # RUN TIMELINE
-            await self._run_timeline(show, context)
-
-            logger.info(f"Show completed: {show.name}")
-
-            # Notify that show completed successfully
-            if self.notifier:
-                self.notifier.notify_show_end(show.name, context)
-
-        except KeyboardInterrupt:
-            logger.warning(f"Show interrupted by user: {show.name}")
-            self._interrupted = True
-            raise ShowInterruptedError(show.name, "User interrupt (Ctrl+C)")
-
-        except Exception as e:
-            logger.error(f"Show error: {show.name} - {e}", exc_info=True)
-
-            # Notify that show failed
-            if self.notifier:
-                self.notifier.notify_show_failed(show.name, str(e))
-
-            # ERROR HOOK
-            if self.hooks.on_error:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A canceled caller must not leave hardware or cleanup running behind it.
+            if not task.done():
+                self.stop()
+            while not task.done():
                 try:
-                    await self._run_hook(self.hooks.on_error, e, show, context)
-                except Exception as hook_error:
-                    logger.error(f"Error hook failed: {hook_error}", exc_info=True)
-
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    continue
+            # Retrieve exceptions, while preserving caller cancellation.
+            if not task.cancelled():
+                task.exception()
             raise
 
-        finally:
-            # POST-SHOW HOOK (ALWAYS RUNS)
-            if self.hooks.post_show:
-                logger.debug("Running post-show hook")
+    async def _run_owned(self, show: Show, context: dict) -> RunResult:
+        result = RunResult(show.name)
+        self._started = True
+        try:
+            if self._interrupted:
+                raise asyncio.CancelledError
+            allowed, reason = await self._check_can_run(show, context)
+            if not allowed:
+                result.status, result.reason = "blocked", reason
+                return result
+            if self.notifier:
+                self.notifier.notify_show_start(show.name, context)
+            if self.hooks.pre_show:
+                await self._run_hook(self.hooks.pre_show, show, context)
+            await self._run_timeline(show, context)
+            if self._interrupted:
+                result.status = "interrupted"
+        except asyncio.CancelledError:
+            result.status = "interrupted"
+        except Exception as error:  # noqa: BLE001 - preserve user command failures
+            result.status = "failed"
+            result.errors.append(error)
+            if self.hooks.on_error:
                 try:
+                    await self._run_hook(self.hooks.on_error, error, show, context)
+                except Exception as hook_error:  # noqa: BLE001 - aggregate cleanup failures
+                    result.errors.append(hook_error)
+        finally:
+            # Run cleanup in a separate task so repeated stop requests cannot abort it.
+            async def cleanup():
+                if result.status != "blocked" and self.hooks.post_show:
                     await self._run_hook(self.hooks.post_show, show, context)
-                except Exception as hook_error:
-                    logger.error(f"Post-show hook failed: {hook_error}", exc_info=True)
 
+            cleanup_task = asyncio.create_task(cleanup())
+            while not cleanup_task.done():
+                try:
+                    await asyncio.shield(cleanup_task)
+                except asyncio.CancelledError:
+                    result.status = "interrupted"
+                except Exception:  # noqa: BLE001 - retrieved and surfaced below
+                    break
+            if not cleanup_task.cancelled() and cleanup_task.exception():
+                result.errors.append(cleanup_task.exception())
+                result.status = "failed"
             self._running = False
             self._current_show = None
+            self.last_result = result
+        if self.notifier:
+            if result.errors:
+                self.notifier.notify_show_failed(show.name, str(result.errors[0]))
+            elif result.status == "completed":
+                self.notifier.notify_show_end(show.name, context)
+        if result.errors:
+            if len(result.errors) == 1:
+                raise result.errors[0]
+            raise ExceptionGroup("Show and cleanup failures", result.errors)
+        return result
 
     async def run_rotation(
-        self, show_names: List[str], repeat: bool = False, context: Optional[dict] = None
+        self, show_names: list[str], repeat: bool = False, context: dict | None = None
     ) -> None:
         """
         Run shows in rotation.
@@ -331,7 +322,7 @@ class LightShowManager:
             logger.info(f"Rotation iteration {iteration} complete")
 
     async def run_all_shows(
-        self, delay_between: float = 5.0, context: Optional[dict] = None, repeat: bool = False
+        self, delay_between: float = 5.0, context: dict | None = None, repeat: bool = False
     ) -> None:
         """
         Run all registered shows sequentially.
@@ -387,23 +378,13 @@ class LightShowManager:
     # ========== CONTROL METHODS ==========
 
     def stop(self) -> None:
-        """
-        Stop the currently running show gracefully.
-
-        Post-show hook will still run for cleanup.
-        """
-        if self._running:
-            logger.info(
-                f"Stopping show: {self._current_show.name if self._current_show else 'unknown'}"
-            )
-            self._running = False
-        else:
-            logger.warning("No show is currently running")
+        """Request interruption; use stop_current_show to await cleanup."""
+        if self._task is not None and not self._task.done() and not self._interrupted:
+            self._interrupted = True
+            if self._started:
+                self._task.cancel()
 
     def _handle_interrupt(self, signum, frame):
-        """Handle interrupt signals (Ctrl+C, SIGTERM)."""
-        logger.warning("\nReceived interrupt signal, stopping gracefully...")
-        self._interrupted = True
         self.stop()
 
     # ========== INTERNAL EXECUTION ==========
@@ -412,11 +393,7 @@ class LightShowManager:
         """Execute show timeline with precise timing."""
         events = show.get_events()
 
-        if not events:
-            logger.warning(f"Show '{show.name}' has no events")
-            return
-
-        start_time = time.time()
+        start_time = self._clock()
 
         for event in events:
             if not self._running or self._interrupted:
@@ -424,16 +401,16 @@ class LightShowManager:
                 break
 
             # Wait until event timestamp
-            current_time = time.time() - start_time
+            current_time = self._clock() - start_time
             wait_time = event.timestamp - current_time
 
             # Sleep in small intervals to check for interrupts frequently
             if wait_time > 0:
-                check_interval = 0.1  # Check for interrupts every 100ms
+                check_interval = self.time_precision  # Check for interrupts every 100ms
                 while wait_time > 0 and not self._interrupted:
                     sleep_time = min(wait_time, check_interval)
-                    await asyncio.sleep(sleep_time)
-                    current_time = time.time() - start_time
+                    await self._sleep(sleep_time)
+                    current_time = self._clock() - start_time
                     wait_time = event.timestamp - current_time
 
             # Check if interrupted during wait
@@ -447,24 +424,15 @@ class LightShowManager:
 
                 # ON-EVENT HOOK
                 if self.hooks.on_event:
-                    try:
-                        await self._run_hook(self.hooks.on_event, event, show, context)
-                    except Exception as hook_error:
-                        logger.error(f"Event hook failed: {hook_error}", exc_info=True)
+                    await self._run_hook(self.hooks.on_event, event, show, context)
 
-            except Exception as e:
-                error = EventExecutionError(event.description, e)
-                logger.error(f"Event execution failed: {error}")
+            except Exception as error:
+                raise EventExecutionError(event.description, error) from error
 
-                # ERROR HOOK
-                if self.hooks.on_error:
-                    try:
-                        await self._run_hook(self.hooks.on_error, error, event, show, context)
-                    except Exception as hook_error:
-                        logger.error(f"Error hook failed: {hook_error}", exc_info=True)
-
-                # Re-raise to stop show
-                raise error
+        # Duration includes silence after the final cue, using the same clock.
+        remaining = show.duration - (self._clock() - start_time)
+        if remaining > 0 and not self._interrupted:
+            await self._sleep(remaining)
 
     async def _execute_event(self, event: TimelineEvent, show: Show, context: dict) -> None:
         """Execute a single event (sync or async, single or batch)."""
@@ -481,11 +449,9 @@ class LightShowManager:
             else:
                 results = await self.executor.execute_sync_batch(event.commands)
 
-            # Check for exceptions in batch
-            for i, result in enumerate(results):
-                if isinstance(result, Exception):
-                    logger.error(f"Batch command {i} failed: {result}")
-                    raise result
+            failures = [r for r in results if isinstance(r, Exception)]
+            if failures:
+                raise ExceptionGroup("Batch command failures", failures)
 
         else:
             # Execute single command
@@ -494,7 +460,7 @@ class LightShowManager:
             else:
                 await self.executor.execute_sync(event.command)
 
-    async def _check_can_run(self, show: Show, context: dict) -> Tuple[bool, str]:
+    async def _check_can_run(self, show: Show, context: dict) -> tuple[bool, str]:
         """
         Check if show can run using the can_run hook.
 
@@ -513,10 +479,10 @@ class LightShowManager:
 
         try:
             # Run the hook
-            if asyncio.iscoroutinefunction(self.hooks.can_run):
+            if inspect.iscoroutinefunction(self.hooks.can_run):
                 result = await self.hooks.can_run(show, context)
             else:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 result = await loop.run_in_executor(None, lambda: self.hooks.can_run(show, context))
 
             # Handle different return types
@@ -539,7 +505,7 @@ class LightShowManager:
                 return (True, "Invalid check result, defaulting to allow")
 
         except Exception as e:
-            logger.error(f"can_run hook failed: {e}", exc_info=True)
+            logger.exception("can_run hook failed")
             # On error, allow show to run (fail-open)
             return (True, f"Check error (allowing): {e}")
 
@@ -549,20 +515,21 @@ class LightShowManager:
 
         Automatically detects if hook is async and handles accordingly.
         """
-        if asyncio.iscoroutinefunction(hook):
+        if inspect.iscoroutinefunction(hook):
             # Async hook - await it
             await hook(*args, **kwargs)
         else:
             # Sync hook - run in thread pool
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: hook(*args, **kwargs))
+            await self.executor.execute_sync(lambda: hook(*args, **kwargs))
 
     # ========== CLEANUP ==========
 
     def shutdown(self) -> None:
         """Shutdown manager and executor."""
         logger.info("Shutting down Light Show Manager")
-        self.stop()
+        if self._running:
+            raise RuntimeError("Use await manager.aclose() while a show is running")
+        self._closed = True
         self.executor.shutdown()
 
     def __enter__(self):
@@ -573,3 +540,13 @@ class LightShowManager:
         """Context manager exit."""
         self.shutdown()
         return False
+
+    async def aclose(self):
+        await self.stop_current_show()
+        self.shutdown()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        await self.aclose()

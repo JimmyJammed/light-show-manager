@@ -34,9 +34,8 @@ class TestProcessLock:
         assert lock.is_locked()
         assert lock.lock_file.exists()
 
-        # Lock file should contain our PID
-        pid = int(lock.lock_file.read_text().strip())
-        assert pid == os.getpid()
+        # Ownership is represented by a kernel lock, not file contents.
+        assert ProcessLock("test", tmp_path).is_locked()
 
         # Cleanup
         lock.release()
@@ -50,7 +49,7 @@ class TestProcessLock:
 
         lock.release()
         assert not lock.is_locked()
-        assert not lock.lock_file.exists()
+        assert lock.lock_file.exists()
 
     def test_double_acquire_same_process(self, tmp_path):
         """Test acquiring lock twice in same process raises error."""
@@ -63,8 +62,7 @@ class TestProcessLock:
         with pytest.raises(ProcessLockError) as exc_info:
             lock2.acquire()
 
-        assert "Another instance is already running" in str(exc_info.value)
-        assert str(os.getpid()) in str(exc_info.value)
+        assert "Lock is held" in str(exc_info.value)
 
         lock1.release()
 
@@ -80,7 +78,7 @@ class TestProcessLock:
 
         # Should be released after context
         assert not lock.is_locked()
-        assert not lock.lock_file.exists()
+        assert lock.lock_file.exists()
 
     def test_context_manager_with_exception(self, tmp_path):
         """Test context manager releases lock even on exception."""
@@ -95,7 +93,7 @@ class TestProcessLock:
 
         # Lock should still be released
         assert not lock.is_locked()
-        assert not lock.lock_file.exists()
+        assert lock.lock_file.exists()
 
     def test_stale_lock_cleanup(self, tmp_path):
         """Test that stale locks (dead process) are cleaned up."""
@@ -112,9 +110,7 @@ class TestProcessLock:
         lock.acquire()
         assert lock.is_locked()
 
-        # Should have our PID now
-        pid = int(lock.lock_file.read_text().strip())
-        assert pid == os.getpid()
+        assert ProcessLock("test", tmp_path).is_locked()
 
         lock.release()
 
@@ -128,9 +124,8 @@ class TestProcessLock:
         # Should not be considered locked
         assert not lock.is_locked()
 
-        # Lock file should be removed
-        # (is_locked() removes invalid files)
-        assert not lock.lock_file.exists()
+        # Persistent lock files avoid inode replacement races.
+        assert lock.lock_file.exists()
 
         # Should be able to acquire
         lock.acquire()
@@ -193,7 +188,8 @@ class TestProcessLock:
         del lock
 
         # Lock should be released
-        assert not lock_file.exists()
+        assert lock_file.exists()
+        assert not ProcessLock("test", tmp_path).is_locked()
 
     def test_different_lock_names(self, tmp_path):
         """Test that different lock names don't conflict."""

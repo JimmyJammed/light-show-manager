@@ -6,8 +6,9 @@ Handles execution of timeline events with proper async/sync handling.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Callable, List, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -47,8 +48,20 @@ class Executor:
         if self._shutdown:
             raise RuntimeError("Executor has been shutdown")
 
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(self.thread_pool, command)
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(self.thread_pool, command)
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            # Python cannot terminate a worker thread. Drain it before restoration.
+            while not future.done():
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    continue
+            if not future.cancelled():
+                future.exception()
+            raise
 
     async def execute_async(self, command: Callable) -> Any:
         """
@@ -68,7 +81,7 @@ class Executor:
 
         return await command()
 
-    async def execute_sync_batch(self, commands: List[Callable]) -> List[Any]:
+    async def execute_sync_batch(self, commands: list[Callable]) -> list[Any]:
         """
         Execute multiple sync commands concurrently in thread pool.
 
@@ -84,7 +97,7 @@ class Executor:
         tasks = [self.execute_sync(cmd) for cmd in commands]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def execute_async_batch(self, commands: List[Callable]) -> List[Any]:
+    async def execute_async_batch(self, commands: list[Callable]) -> list[Any]:
         """
         Execute multiple async commands concurrently.
 

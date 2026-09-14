@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0
+
+Python 3.12 baseline; monotonic injectable scheduling; structured outcomes; owned cancellation and cleanup; atomic process locks; opt-in signals; silent audio backend; device-free CLI demo; updated documentation. See MIGRATION for breaking changes.
+
+## Historical changelog
+
+# Changelog
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
